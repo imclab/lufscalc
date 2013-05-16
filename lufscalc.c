@@ -111,6 +111,7 @@ typedef struct LufscalcConfig {
     char *segfile;
     int segchan;
     int segoffs;
+    int segframes;
     int crlf;
 } LufscalcConfig;
 
@@ -127,6 +128,7 @@ static const AVOption lufscalc_config_options[] = {
   { "segfile",      "set file which contains segment information",                     offsetof(LufscalcConfig, segfile),        AV_OPT_TYPE_STRING },
   { "segchan",      "set segment file channel ID",                                     offsetof(LufscalcConfig, segchan),        AV_OPT_TYPE_INT,    {  10007 },  0, 65535 },
   { "segoffs",      "set video file start delay from 00:00 in frames",                 offsetof(LufscalcConfig, segoffs),        AV_OPT_TYPE_INT,    { 450000 + 75 },  -15120000, 15120000 },
+  { "segframes",    "segment file contains full timecodes and not seconds",            offsetof(LufscalcConfig, segframes),      AV_OPT_TYPE_INT,    { 0 },   0, 1 },
   { NULL },
 };
 
@@ -336,11 +338,14 @@ static void print_results(int nb_channel, int track, const char *filename, doubl
        fprintf(stdout, "%d channel (track %d) LUFS and Peak for %s: %.1f %.1f\n", nb_channel, track, filename, lufs, peak);
 }
 
-static int tc2frames(int tc) {
-  return ((tc % 100) + ((tc / 100) % 100) * 60 + (tc / 100 / 100) * 3600) * 25;
+static int tc2frames(int tc, int segframes) {
+    int frames = (segframes ? tc % 100 : 0);
+    if (segframes)
+        tc /= 100;
+    return ((tc % 100) + ((tc / 100) % 100) * 60 + (tc / 100 / 100) * 3600) * 25 + frames;
 }
 
-static SegmentContext* load_segments(const char * filename, int segchan, int segoffs) {
+static SegmentContext* load_segments(const char * filename, int segchan, int segoffs, int segframes) {
     FILE *f;
     char temp[1000];
     int dummy, start, end, len, channel;
@@ -355,8 +360,8 @@ static SegmentContext* load_segments(const char * filename, int segchan, int seg
     while (fgets(temp, sizeof(temp), f) && seg->nb_segments < MAX_SEGMENTS) {
        sscanf(temp, "%d,%d,%d,%d,%d,%d", &dummy,&channel,&dummy,&start,&end,&len);
        if (channel == segchan) {
-         start = tc2frames(start) - segoffs;
-         end   = tc2frames(end)   - segoffs;
+         start = tc2frames(start, segframes) - segoffs;
+         end   = tc2frames(end,   segframes) - segoffs;
          if (end > start && start >= 0 && (seg->nb_segments == 0 || start > seg->end[seg->nb_segments - 1]) && !strstr(temp, "\"N\"") && !strstr(temp, "\"G\"")) {
              seg->start[seg->nb_segments] = start;
              seg->end[seg->nb_segments] = end;
@@ -407,7 +412,7 @@ static int lufscalc_file(const char *filename, LufscalcConfig *conf)
         panic("failed to open or create logfile");
 
     if (conf->segfile) {
-        if (!(segs = load_segments(conf->segfile, conf->segchan, conf->segoffs))) {
+        if (!(segs = load_segments(conf->segfile, conf->segchan, conf->segoffs, conf->segframes))) {
             panic("failed to load segment file");
         } else {
             av_log(conf, AV_LOG_INFO, "Loaded %d segments from %s\n", segs->nb_segments, conf->segfile);
